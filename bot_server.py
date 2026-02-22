@@ -6,20 +6,39 @@ import os
 import time
 import random
 import string
+import sqlite3
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
 
 app = Flask(__name__)
 
-# ВРЕМЕННАЯ БАЗА В ПАМЯТИ
-keys_db = {}
+ADMIN_PASSWORD = "12345"
 
-ADMIN_PASSWORD = "12345"  # можешь поменять
+DB_FILE = "keys.db"
 
 
 # =========================
-# ГЕНЕРАЦИЯ КЛЮЧА
+# DATABASE INIT
+# =========================
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS keys (
+            key TEXT PRIMARY KEY,
+            expire INTEGER
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+
+# =========================
+# FUNCTIONS
 # =========================
 
 def generate_key():
@@ -27,36 +46,63 @@ def generate_key():
     return f"KeySystem_{random_part}"
 
 
+def add_key_to_db(key, expire_time):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO keys (key, expire) VALUES (?, ?)", (key, expire_time))
+    conn.commit()
+    conn.close()
+
+
+def check_key_in_db(key):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT expire FROM keys WHERE key=?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return False
+
+    expire_time = row[0]
+    if time.time() > expire_time:
+        return False
+
+    return True
+
+
+def get_all_keys():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT key, expire FROM keys")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
 # =========================
-# START
+# TELEGRAM
 # =========================
 
 @bot.message_handler(commands=['start'])
 def start(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn1 = types.KeyboardButton("🔑 Получить ключ")
-    btn2 = types.KeyboardButton("📋 Список ключей (админ)")
-    markup.add(btn1, btn2)
+    markup.add("🔑 Получить ключ", "📋 Список ключей (админ)")
+    bot.send_message(message.chat.id, "Выберите действие:", reply_markup=markup)
 
-    bot.send_message(message.chat.id, "Добро пожаловать!\nВыберите действие:", reply_markup=markup)
-
-
-# =========================
-# ПОЛУЧИТЬ КЛЮЧ
-# =========================
 
 @bot.message_handler(func=lambda m: m.text == "🔑 Получить ключ")
 def choose_time(message):
     markup = types.InlineKeyboardMarkup()
-    btn1 = types.InlineKeyboardButton("24 часа", callback_data="24h")
-    btn2 = types.InlineKeyboardButton("2 минуты", callback_data="2m")
-    markup.add(btn1, btn2)
-
-    bot.send_message(message.chat.id, "Выберите время действия ключа:", reply_markup=markup)
+    markup.add(
+        types.InlineKeyboardButton("24 часа", callback_data="24h"),
+        types.InlineKeyboardButton("2 минуты", callback_data="2m")
+    )
+    bot.send_message(message.chat.id, "Выберите время:", reply_markup=markup)
 
 
 @bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
+def callback(call):
     if call.data == "24h":
         duration = 60 * 60 * 24
     elif call.data == "2m":
@@ -65,37 +111,35 @@ def callback_handler(call):
         return
 
     key = generate_key()
-    expire_time = time.time() + duration
+    expire_time = int(time.time() + duration)
 
-    keys_db[key] = expire_time
+    add_key_to_db(key, expire_time)
 
     bot.send_message(call.message.chat.id, f"✅ Ваш ключ:\n\n`{key}`", parse_mode="Markdown")
 
 
-# =========================
-# СПИСОК КЛЮЧЕЙ
-# =========================
-
 @bot.message_handler(func=lambda m: m.text == "📋 Список ключей (админ)")
 def admin_request(message):
-    msg = bot.send_message(message.chat.id, "Введите пароль администратора:")
-    bot.register_next_step_handler(msg, check_admin_password)
+    msg = bot.send_message(message.chat.id, "Введите пароль:")
+    bot.register_next_step_handler(msg, check_admin)
 
 
-def check_admin_password(message):
+def check_admin(message):
     if message.text != ADMIN_PASSWORD:
-        bot.send_message(message.chat.id, "❌ Неверный пароль!")
+        bot.send_message(message.chat.id, "❌ Неверный пароль")
         return
 
-    if not keys_db:
-        bot.send_message(message.chat.id, "База ключей пуста.")
+    rows = get_all_keys()
+
+    if not rows:
+        bot.send_message(message.chat.id, "База пустая.")
         return
 
-    text = "📋 Список ключей:\n\n"
-    current_time = time.time()
+    text = "📋 База ключей:\n\n"
+    now = time.time()
 
-    for key, expire in keys_db.items():
-        remaining = int(expire - current_time)
+    for key, expire in rows:
+        remaining = int(expire - now)
         if remaining > 0:
             text += f"{key} | Активен | {remaining} сек\n"
         else:
@@ -105,33 +149,45 @@ def check_admin_password(message):
 
 
 # =========================
-# ПРОВЕРКА КЛЮЧА (для Lua)
+# FLASK API
 # =========================
-
-@app.route("/check_key")
-def check_key():
-    key = request.args.get("key")
-
-    if not key or key not in keys_db:
-        return jsonify({"ok": False})
-
-    if time.time() > keys_db[key]:
-        return jsonify({"ok": False})
-
-    return jsonify({"ok": True})
-
 
 @app.route("/")
 def home():
     return "Server is running"
 
 
+@app.route("/check_key")
+def check_key():
+    key = request.args.get("key")
+    if not key:
+        return jsonify({"ok": False})
+
+    if check_key_in_db(key):
+        return jsonify({"ok": True})
+    else:
+        return jsonify({"ok": False})
+
+
+@app.route("/keys")
+def view_keys():
+    rows = get_all_keys()
+    result = []
+
+    for key, expire in rows:
+        result.append({
+            "key": key,
+            "expire": expire
+        })
+
+    return jsonify(result)
+
+
 # =========================
-# ЗАПУСК
+# START
 # =========================
 
 def run_bot():
-    print("BOT STARTED")
     bot.infinity_polling(skip_pending=True)
 
 
