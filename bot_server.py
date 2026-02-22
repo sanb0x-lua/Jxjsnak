@@ -1,176 +1,144 @@
-from flask import Flask, request, jsonify
 import telebot
-import json
-import time
+from telebot import types
+from flask import Flask, request, jsonify
+import threading
 import os
+import time
 import random
 import string
-import threading
 
-# =========================
-# НАСТРОЙКИ
-# =========================
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise Exception("BOT_TOKEN не найден в Environment Variables")
-
-ADMIN_PASSWORD = "123"
-DB_FILE = "keys_db.json"
-
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
+
 app = Flask(__name__)
 
-# =========================
-# БАЗА
-# =========================
+# ВРЕМЕННАЯ БАЗА В ПАМЯТИ
+keys_db = {}
 
-def load_keys():
-    if not os.path.exists(DB_FILE):
-        with open(DB_FILE, "w") as f:
-            json.dump([], f)
-        return []
+ADMIN_PASSWORD = "12345"  # можешь поменять
 
-    with open(DB_FILE, "r") as f:
-        try:
-            return json.load(f)
-        except:
-            return []
-
-def save_keys(data):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f, indent=4)
 
 # =========================
 # ГЕНЕРАЦИЯ КЛЮЧА
 # =========================
 
 def generate_key():
-    return "KeySystem_" + ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
+    random_part = ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
+    return f"KeySystem_{random_part}"
+
 
 # =========================
-# TELEGRAM UI
+# START
 # =========================
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    markup = telebot.types.InlineKeyboardMarkup()
-
-    btn1 = telebot.types.InlineKeyboardButton("⏳ 2 минуты", callback_data="2min")
-    btn2 = telebot.types.InlineKeyboardButton("🕒 24 часа", callback_data="24h")
-    btn3 = telebot.types.InlineKeyboardButton("👑 Админ", callback_data="admin")
-
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn1 = types.KeyboardButton("🔑 Получить ключ")
+    btn2 = types.KeyboardButton("📋 Список ключей (админ)")
     markup.add(btn1, btn2)
-    markup.add(btn3)
 
-    bot.send_message(
-        message.chat.id,
-        "Добро пожаловать в KeySystem!\nВыбери срок действия ключа:",
-        reply_markup=markup
-    )
+    bot.send_message(message.chat.id, "Добро пожаловать!\nВыберите действие:", reply_markup=markup)
+
 
 # =========================
-# ОБРАБОТКА КНОПОК
+# ПОЛУЧИТЬ КЛЮЧ
 # =========================
+
+@bot.message_handler(func=lambda m: m.text == "🔑 Получить ключ")
+def choose_time(message):
+    markup = types.InlineKeyboardMarkup()
+    btn1 = types.InlineKeyboardButton("24 часа", callback_data="24h")
+    btn2 = types.InlineKeyboardButton("2 минуты", callback_data="2m")
+    markup.add(btn1, btn2)
+
+    bot.send_message(message.chat.id, "Выберите время действия ключа:", reply_markup=markup)
+
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
-
-    if call.data == "admin":
-        msg = bot.send_message(call.message.chat.id, "Введите пароль администратора:")
-        bot.register_next_step_handler(msg, admin_panel)
-        return
-
-    keys = load_keys()
-
-    if call.data == "2min":
-        expire_time = int(time.time()) + 120
-
-    elif call.data == "24h":
-        expire_time = int(time.time()) + 86400
-
+    if call.data == "24h":
+        duration = 60 * 60 * 24
+    elif call.data == "2m":
+        duration = 60 * 2
     else:
         return
 
     key = generate_key()
+    expire_time = time.time() + duration
 
-    keys.append({
-        "key": key,
-        "user_id": call.from_user.id,
-        "username": call.from_user.username,
-        "expire": expire_time
-    })
+    keys_db[key] = expire_time
 
-    save_keys(keys)
+    bot.send_message(call.message.chat.id, f"✅ Ваш ключ:\n\n`{key}`", parse_mode="Markdown")
 
-    bot.send_message(
-        call.message.chat.id,
-        f"🔑 Ваш ключ:\n\n{key}"
-    )
 
 # =========================
-# АДМИН ПАНЕЛЬ
+# СПИСОК КЛЮЧЕЙ
 # =========================
 
-def admin_panel(message):
+@bot.message_handler(func=lambda m: m.text == "📋 Список ключей (админ)")
+def admin_request(message):
+    msg = bot.send_message(message.chat.id, "Введите пароль администратора:")
+    bot.register_next_step_handler(msg, check_admin_password)
+
+
+def check_admin_password(message):
     if message.text != ADMIN_PASSWORD:
-        bot.send_message(message.chat.id, "❌ Неверный пароль.")
+        bot.send_message(message.chat.id, "❌ Неверный пароль!")
         return
 
-    keys = load_keys()
-    now = int(time.time())
-
-    if not keys:
+    if not keys_db:
         bot.send_message(message.chat.id, "База ключей пуста.")
         return
 
     text = "📋 Список ключей:\n\n"
+    current_time = time.time()
 
-    for k in keys:
-        left = k["expire"] - now
-        status = "Активен" if left > 0 else "Истёк"
-        text += f"{k['key']} | {status} | {max(left,0)} сек\n"
+    for key, expire in keys_db.items():
+        remaining = int(expire - current_time)
+        if remaining > 0:
+            text += f"{key} | Активен | {remaining} сек\n"
+        else:
+            text += f"{key} | Просрочен\n"
 
     bot.send_message(message.chat.id, text)
 
-# =========================
-# API ПРОВЕРКА
-# =========================
 
-@app.route("/")
-def home():
-    return "Server is running"
+# =========================
+# ПРОВЕРКА КЛЮЧА (для Lua)
+# =========================
 
 @app.route("/check_key")
 def check_key():
     key = request.args.get("key")
 
-    if not key:
+    if not key or key not in keys_db:
         return jsonify({"ok": False})
 
-    keys = load_keys()
-    now = int(time.time())
+    if time.time() > keys_db[key]:
+        return jsonify({"ok": False})
 
-    for k in keys:
-        if k["key"] == key:
-            if k["expire"] > now:
-                return jsonify({"ok": True})
-            else:
-                return jsonify({"ok": False})
+    return jsonify({"ok": True})
 
-    return jsonify({"ok": False})
+
+@app.route("/")
+def home():
+    return "Server is running"
+
 
 # =========================
 # ЗАПУСК
 # =========================
 
 def run_bot():
+    print("BOT STARTED")
     bot.infinity_polling(skip_pending=True)
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
 
-    thread = threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60))
+    thread = threading.Thread(target=run_bot)
     thread.daemon = True
     thread.start()
 
