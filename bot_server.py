@@ -40,19 +40,13 @@ def add_key(duration):
         "key": key,
         "expire": int(time.time()) + duration,
         "ip": None,
+        "hwid": None,
         "activated_at": None,
         "blocked": False
     })
 
     save_db(db)
     return key
-
-def find_key(key):
-    db = load_db()
-    for k in db["keys"]:
-        if k["key"] == key:
-            return k
-    return None
 
 # ================= TELEGRAM =================
 
@@ -61,8 +55,6 @@ def start(message):
     markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("🔑 Получить ключ", "📋 Админ панель")
     bot.send_message(message.chat.id, "Выберите:", reply_markup=markup)
-
-# ---------- KEY CREATE ----------
 
 @bot.message_handler(func=lambda m: m.text == "🔑 Получить ключ")
 def choose_time(message):
@@ -84,7 +76,7 @@ def callback(call):
 
     bot.send_message(call.message.chat.id, f"✅ Ключ создан:\n\n`{key}`", parse_mode="Markdown")
 
-# ================= ADMIN =================
+# ================= ADMIN PANEL =================
 
 @bot.message_handler(func=lambda m: m.text == "📋 Админ панель")
 def admin_login(message):
@@ -96,138 +88,28 @@ def check_admin(message):
         bot.send_message(message.chat.id, "❌ Неверный пароль")
         return
 
-    show_admin_menu(message.chat.id)
-
-def show_admin_menu(chat_id):
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("📋 Все ключи", "📊 Статистика")
-    markup.add("🔍 Найти ключ", "🚫 Блокировать ключ")
-    markup.add("✅ Разблокировать ключ", "🗑 Удалить ключ")
-    markup.add("⬅ Назад")
-    bot.send_message(chat_id, "Админ панель:", reply_markup=markup)
-
-# ---------- SHOW ALL ----------
-
-@bot.message_handler(func=lambda m: m.text == "📋 Все ключи")
-def show_all(message):
     db = load_db()
     now = int(time.time())
     text = "Keys:\n\n"
 
     for i, k in enumerate(db["keys"], 1):
         remaining = k["expire"] - now
-        if k["blocked"]:
-            status = "Blocked"
-        elif remaining > 0:
-            status = "Active"
-        else:
-            status = "Expired"
+        status = "Blocked" if k["blocked"] else ("Active" if remaining>0 else "Expired")
 
         text += f"{i}. Key: {k['key']}\n"
         text += f"   IP: {k['ip']}\n"
+        text += f"   HWID: {k['hwid']}\n"
         text += f"   Status: {status}\n"
         text += f"   Remaining: {remaining if remaining>0 else 0} sec\n\n"
 
     bot.send_message(message.chat.id, text)
 
-# ---------- SEARCH ----------
-
-@bot.message_handler(func=lambda m: m.text == "🔍 Найти ключ")
-def search_key(message):
-    msg = bot.send_message(message.chat.id, "Введите ключ:")
-    bot.register_next_step_handler(msg, search_key_action)
-
-def search_key_action(message):
-    k = find_key(message.text.strip())
-    if not k:
-        bot.send_message(message.chat.id, "❌ Не найден")
-        return
-
-    remaining = k["expire"] - int(time.time())
-    status = "Blocked" if k["blocked"] else ("Active" if remaining>0 else "Expired")
-
-    text = f"""
-Key: {k['key']}
-IP: {k['ip']}
-Status: {status}
-Remaining: {remaining if remaining>0 else 0} sec
-"""
-    bot.send_message(message.chat.id, text)
-
-# ---------- BLOCK ----------
-
-@bot.message_handler(func=lambda m: m.text == "🚫 Блокировать ключ")
-def block_prompt(message):
-    msg = bot.send_message(message.chat.id, "Введите ключ для блокировки:")
-    bot.register_next_step_handler(msg, block_key)
-
-def block_key(message):
-    db = load_db()
-    for k in db["keys"]:
-        if k["key"] == message.text.strip():
-            k["blocked"] = True
-            save_db(db)
-            bot.send_message(message.chat.id, "✅ Ключ заблокирован")
-            return
-    bot.send_message(message.chat.id, "❌ Не найден")
-
-# ---------- UNBLOCK ----------
-
-@bot.message_handler(func=lambda m: m.text == "✅ Разблокировать ключ")
-def unblock_prompt(message):
-    msg = bot.send_message(message.chat.id, "Введите ключ:")
-    bot.register_next_step_handler(msg, unblock_key)
-
-def unblock_key(message):
-    db = load_db()
-    for k in db["keys"]:
-        if k["key"] == message.text.strip():
-            k["blocked"] = False
-            save_db(db)
-            bot.send_message(message.chat.id, "✅ Разблокирован")
-            return
-    bot.send_message(message.chat.id, "❌ Не найден")
-
-# ---------- DELETE ----------
-
-@bot.message_handler(func=lambda m: m.text == "🗑 Удалить ключ")
-def delete_prompt(message):
-    msg = bot.send_message(message.chat.id, "Введите ключ:")
-    bot.register_next_step_handler(msg, delete_key)
-
-def delete_key(message):
-    db = load_db()
-    db["keys"] = [k for k in db["keys"] if k["key"] != message.text.strip()]
-    save_db(db)
-    bot.send_message(message.chat.id, "✅ Удалено")
-
-# ---------- STATS ----------
-
-@bot.message_handler(func=lambda m: m.text == "📊 Статистика")
-def stats(message):
-    db = load_db()
-    now = int(time.time())
-
-    total = len(db["keys"])
-    active = sum(1 for k in db["keys"] if not k["blocked"] and k["expire"] > now)
-    expired = sum(1 for k in db["keys"] if k["expire"] <= now)
-    blocked = sum(1 for k in db["keys"] if k["blocked"])
-
-    text = f"""
-📊 Статистика:
-
-Всего: {total}
-Активных: {active}
-Просроченных: {expired}
-Заблокированных: {blocked}
-"""
-    bot.send_message(message.chat.id, text)
-
-# ================= CHECK KEY =================
+# ================= CHECK KEY API =================
 
 @app.route("/check_key")
 def check_key():
     key = request.args.get("key")
+    hwid = request.args.get("hwid")
     user_ip = request.remote_addr
 
     db = load_db()
@@ -241,16 +123,19 @@ def check_key():
             if time.time() > k["expire"]:
                 return jsonify({"ok": False, "expired": True})
 
-            if k["ip"] is None:
+            if k["hwid"] is None:
+                k["hwid"] = hwid
                 k["ip"] = user_ip
                 k["activated_at"] = int(time.time())
                 save_db(db)
+                return jsonify({"ok": True, "first_bind": True})
+
+            if k["hwid"] != hwid:
+                return jsonify({"ok": False, "wrong_hwid": True})
 
             return jsonify({"ok": True})
 
     return jsonify({"ok": False})
-
-# ---------- VIEW IN BROWSER ----------
 
 @app.route("/keys")
 def view_keys():
@@ -258,7 +143,7 @@ def view_keys():
 
 @app.route("/")
 def home():
-    return "PRO JSON Key System Running"
+    return "FINAL PRO KEY SYSTEM RUNNING"
 
 # ================= WEBHOOK =================
 
