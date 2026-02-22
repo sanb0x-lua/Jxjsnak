@@ -1,25 +1,24 @@
-import telebot
-from telebot import types
-from flask import Flask, request, jsonify
-import threading
 import os
 import time
 import random
 import string
 import sqlite3
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-bot = telebot.TeleBot(BOT_TOKEN)
+from flask import Flask, request, jsonify
+import telebot
+from telebot.types import Update
 
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+WEBHOOK_URL = "https://jxjsnak.onrender.com"  # твой сайт
+
+bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 ADMIN_PASSWORD = "12345"
-
 DB_FILE = "keys.db"
 
-
 # =========================
-# DATABASE INIT
+# DATABASE
 # =========================
 
 def init_db():
@@ -37,24 +36,20 @@ def init_db():
 init_db()
 
 
-# =========================
-# FUNCTIONS
-# =========================
-
 def generate_key():
     random_part = ''.join(random.choices(string.ascii_lowercase + string.digits, k=16))
     return f"KeySystem_{random_part}"
 
 
-def add_key_to_db(key, expire_time):
+def add_key(key, expire):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO keys (key, expire) VALUES (?, ?)", (key, expire_time))
+    cursor.execute("INSERT INTO keys (key, expire) VALUES (?, ?)", (key, expire))
     conn.commit()
     conn.close()
 
 
-def check_key_in_db(key):
+def check_key_db(key):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT expire FROM keys WHERE key=?", (key,))
@@ -64,11 +59,7 @@ def check_key_in_db(key):
     if not row:
         return False
 
-    expire_time = row[0]
-    if time.time() > expire_time:
-        return False
-
-    return True
+    return time.time() < row[0]
 
 
 def get_all_keys():
@@ -86,17 +77,17 @@ def get_all_keys():
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("🔑 Получить ключ", "📋 Список ключей (админ)")
     bot.send_message(message.chat.id, "Выберите действие:", reply_markup=markup)
 
 
 @bot.message_handler(func=lambda m: m.text == "🔑 Получить ключ")
 def choose_time(message):
-    markup = types.InlineKeyboardMarkup()
+    markup = telebot.types.InlineKeyboardMarkup()
     markup.add(
-        types.InlineKeyboardButton("24 часа", callback_data="24h"),
-        types.InlineKeyboardButton("2 минуты", callback_data="2m")
+        telebot.types.InlineKeyboardButton("24 часа", callback_data="24h"),
+        telebot.types.InlineKeyboardButton("2 минуты", callback_data="2m")
     )
     bot.send_message(message.chat.id, "Выберите время:", reply_markup=markup)
 
@@ -111,9 +102,9 @@ def callback(call):
         return
 
     key = generate_key()
-    expire_time = int(time.time() + duration)
+    expire = int(time.time() + duration)
 
-    add_key_to_db(key, expire_time)
+    add_key(key, expire)
 
     bot.send_message(call.message.chat.id, f"✅ Ваш ключ:\n\n`{key}`", parse_mode="Markdown")
 
@@ -130,7 +121,6 @@ def check_admin(message):
         return
 
     rows = get_all_keys()
-
     if not rows:
         bot.send_message(message.chat.id, "База пустая.")
         return
@@ -149,53 +139,44 @@ def check_admin(message):
 
 
 # =========================
-# FLASK API
+# WEBHOOK ROUTE
 # =========================
+
+@app.route(f"/{BOT_TOKEN}", methods=['POST'])
+def webhook():
+    json_str = request.get_data().decode("UTF-8")
+    update = Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "ok", 200
+
 
 @app.route("/")
 def home():
-    return "Server is running"
+    return "Bot is running"
 
 
 @app.route("/check_key")
 def check_key():
     key = request.args.get("key")
-    if not key:
-        return jsonify({"ok": False})
-
-    if check_key_in_db(key):
+    if check_key_db(key):
         return jsonify({"ok": True})
-    else:
-        return jsonify({"ok": False})
+    return jsonify({"ok": False})
 
 
 @app.route("/keys")
-def view_keys():
+def keys():
     rows = get_all_keys()
-    result = []
-
-    for key, expire in rows:
-        result.append({
-            "key": key,
-            "expire": expire
-        })
-
-    return jsonify(result)
+    return jsonify([{"key": k, "expire": e} for k, e in rows])
 
 
 # =========================
 # START
 # =========================
 
-def run_bot():
-    bot.infinity_polling(skip_pending=True)
-
-
 if __name__ == "__main__":
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
+
     port = int(os.environ.get("PORT", 10000))
-
-    thread = threading.Thread(target=run_bot)
-    thread.daemon = True
-    thread.start()
-
-    app.run(host="0.0.0.0", port=port, use_reloader=False)
+    app.run(host="0.0.0.0", port=port)
