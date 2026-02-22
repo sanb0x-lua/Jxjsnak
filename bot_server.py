@@ -168,6 +168,10 @@ def run_bot():
     bot.infinity_polling(skip_pending=True)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot).start()
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    thread = threading.Thread(target=lambda: bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60))
+    thread.daemon = True
+    thread.start()
+
+    app.run(host="0.0.0.0", port=port, use_reloader=False)
