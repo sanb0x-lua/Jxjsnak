@@ -54,24 +54,40 @@ def find_key(key):
             return k
     return None
 
-# ================= TELEGRAM =================
+# ================= TELEGRAM MENUS =================
+
+def main_menu(chat_id):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("Получить ключ", "Админ панель")
+    bot.send_message(chat_id, "Выберите:", reply_markup=markup)
+
+def admin_menu(chat_id):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("Все ключи", "Статистика")
+    markup.add("Найти ключ", "Блокировать ключ")
+    markup.add("Разблокировать ключ", "Удалить ключ")
+    markup.add("Назад")
+    bot.send_message(chat_id, "Админ панель:", reply_markup=markup)
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("🔑 Получить ключ", "📋 Админ панель")
-    bot.send_message(message.chat.id, "Выберите:", reply_markup=markup)
+    main_menu(message.chat.id)
 
-# ---------- KEY CREATE ----------
+# ================= KEY CREATE =================
 
-@bot.message_handler(func=lambda m: m.text == "🔑 Получить ключ")
+@bot.message_handler(func=lambda m: m.text == "Получить ключ")
 def choose_time(message):
     markup = telebot.types.InlineKeyboardMarkup()
     markup.add(
         telebot.types.InlineKeyboardButton("24 часа", callback_data="24h"),
         telebot.types.InlineKeyboardButton("2 минуты", callback_data="2m")
     )
-    bot.send_message(message.chat.id, "Выберите время:", reply_markup=markup)
+
+    if os.path.exists("choose.png"):
+        with open("choose.png", "rb") as photo:
+            bot.send_photo(message.chat.id, photo, caption="Выберите время:", reply_markup=markup)
+    else:
+        bot.send_message(message.chat.id, "Выберите время:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: True)
 def callback(call):
@@ -82,33 +98,34 @@ def callback(call):
     else:
         return
 
-    bot.send_message(call.message.chat.id, f"✅ Ключ создан:\n\n`{key}`", parse_mode="Markdown")
+    text = f"Ключ создан:\n\n{key}"
 
-# ================= ADMIN =================
+    if os.path.exists("key.png"):
+        with open("key.png", "rb") as photo:
+            bot.send_photo(call.message.chat.id, photo, caption=text)
+    else:
+        bot.send_message(call.message.chat.id, text)
 
-@bot.message_handler(func=lambda m: m.text == "📋 Админ панель")
+# ================= ADMIN LOGIN =================
+
+@bot.message_handler(func=lambda m: m.text == "Админ панель")
 def admin_login(message):
     msg = bot.send_message(message.chat.id, "Введите пароль:")
     bot.register_next_step_handler(msg, check_admin)
 
 def check_admin(message):
     if message.text != ADMIN_PASSWORD:
-        bot.send_message(message.chat.id, "❌ Неверный пароль")
+        bot.send_message(message.chat.id, "Неверный пароль")
         return
+    admin_menu(message.chat.id)
 
-    show_admin_menu(message.chat.id)
+@bot.message_handler(func=lambda m: m.text == "Назад")
+def back(message):
+    main_menu(message.chat.id)
 
-def show_admin_menu(chat_id):
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("📋 Все ключи", "📊 Статистика")
-    markup.add("🔍 Найти ключ", "🚫 Блокировать ключ")
-    markup.add("✅ Разблокировать ключ", "🗑 Удалить ключ")
-    markup.add("⬅ Назад")
-    bot.send_message(chat_id, "Админ панель:", reply_markup=markup)
+# ================= SHOW ALL =================
 
-# ---------- SHOW ALL ----------
-
-@bot.message_handler(func=lambda m: m.text == "📋 Все ключи")
+@bot.message_handler(func=lambda m: m.text == "Все ключи")
 def show_all(message):
     db = load_db()
     now = int(time.time())
@@ -123,24 +140,24 @@ def show_all(message):
         else:
             status = "Expired"
 
-        text += f"{i}. Key: {k['key']}\n"
-        text += f"   IP: {k['ip']}\n"
-        text += f"   Status: {status}\n"
-        text += f"   Remaining: {remaining if remaining>0 else 0} sec\n\n"
+        text += f"{i}. {k['key']}\n"
+        text += f"IP: {k['ip']}\n"
+        text += f"Status: {status}\n"
+        text += f"Remaining: {remaining if remaining>0 else 0}\n\n"
 
     bot.send_message(message.chat.id, text)
 
-# ---------- SEARCH ----------
+# ================= SEARCH =================
 
-@bot.message_handler(func=lambda m: m.text == "🔍 Найти ключ")
-def search_key(message):
+@bot.message_handler(func=lambda m: m.text == "Найти ключ")
+def search_prompt(message):
     msg = bot.send_message(message.chat.id, "Введите ключ:")
-    bot.register_next_step_handler(msg, search_key_action)
+    bot.register_next_step_handler(msg, search_action)
 
-def search_key_action(message):
+def search_action(message):
     k = find_key(message.text.strip())
     if not k:
-        bot.send_message(message.chat.id, "❌ Не найден")
+        bot.send_message(message.chat.id, "Не найден")
         return
 
     remaining = k["expire"] - int(time.time())
@@ -150,60 +167,60 @@ def search_key_action(message):
 Key: {k['key']}
 IP: {k['ip']}
 Status: {status}
-Remaining: {remaining if remaining>0 else 0} sec
+Remaining: {remaining if remaining>0 else 0}
 """
     bot.send_message(message.chat.id, text)
 
-# ---------- BLOCK ----------
+# ================= BLOCK =================
 
-@bot.message_handler(func=lambda m: m.text == "🚫 Блокировать ключ")
+@bot.message_handler(func=lambda m: m.text == "Блокировать ключ")
 def block_prompt(message):
-    msg = bot.send_message(message.chat.id, "Введите ключ для блокировки:")
-    bot.register_next_step_handler(msg, block_key)
+    msg = bot.send_message(message.chat.id, "Введите ключ:")
+    bot.register_next_step_handler(msg, block_action)
 
-def block_key(message):
+def block_action(message):
     db = load_db()
     for k in db["keys"]:
         if k["key"] == message.text.strip():
             k["blocked"] = True
             save_db(db)
-            bot.send_message(message.chat.id, "✅ Ключ заблокирован")
+            bot.send_message(message.chat.id, "Ключ заблокирован")
             return
-    bot.send_message(message.chat.id, "❌ Не найден")
+    bot.send_message(message.chat.id, "Не найден")
 
-# ---------- UNBLOCK ----------
+# ================= UNBLOCK =================
 
-@bot.message_handler(func=lambda m: m.text == "✅ Разблокировать ключ")
+@bot.message_handler(func=lambda m: m.text == "Разблокировать ключ")
 def unblock_prompt(message):
     msg = bot.send_message(message.chat.id, "Введите ключ:")
-    bot.register_next_step_handler(msg, unblock_key)
+    bot.register_next_step_handler(msg, unblock_action)
 
-def unblock_key(message):
+def unblock_action(message):
     db = load_db()
     for k in db["keys"]:
         if k["key"] == message.text.strip():
             k["blocked"] = False
             save_db(db)
-            bot.send_message(message.chat.id, "✅ Разблокирован")
+            bot.send_message(message.chat.id, "Ключ разблокирован")
             return
-    bot.send_message(message.chat.id, "❌ Не найден")
+    bot.send_message(message.chat.id, "Не найден")
 
-# ---------- DELETE ----------
+# ================= DELETE =================
 
-@bot.message_handler(func=lambda m: m.text == "🗑 Удалить ключ")
+@bot.message_handler(func=lambda m: m.text == "Удалить ключ")
 def delete_prompt(message):
     msg = bot.send_message(message.chat.id, "Введите ключ:")
-    bot.register_next_step_handler(msg, delete_key)
+    bot.register_next_step_handler(msg, delete_action)
 
-def delete_key(message):
+def delete_action(message):
     db = load_db()
     db["keys"] = [k for k in db["keys"] if k["key"] != message.text.strip()]
     save_db(db)
-    bot.send_message(message.chat.id, "✅ Удалено")
+    bot.send_message(message.chat.id, "Удалено")
 
-# ---------- STATS ----------
+# ================= STATS =================
 
-@bot.message_handler(func=lambda m: m.text == "📊 Статистика")
+@bot.message_handler(func=lambda m: m.text == "Статистика")
 def stats(message):
     db = load_db()
     now = int(time.time())
@@ -214,7 +231,7 @@ def stats(message):
     blocked = sum(1 for k in db["keys"] if k["blocked"])
 
     text = f"""
-📊 Статистика:
+Статистика:
 
 Всего: {total}
 Активных: {active}
@@ -250,7 +267,7 @@ def check_key():
 
     return jsonify({"ok": False})
 
-# ---------- VIEW IN BROWSER ----------
+# ================= WEB =================
 
 @app.route("/keys")
 def view_keys():
@@ -258,7 +275,7 @@ def view_keys():
 
 @app.route("/")
 def home():
-    return "PRO JSON Key System Running"
+    return "Key System Running"
 
 # ================= WEBHOOK =================
 
