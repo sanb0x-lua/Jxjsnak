@@ -1,2 +1,4 @@
-pyTelegramBotAPI
 flask
+pyTelegramBotAPI
+psycopg2-binary
+gunicorn
