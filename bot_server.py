@@ -1,5 +1,19 @@
 import os
 import secrets
+from flask import Flask
+from threading import Thread
+
+app_flask = Flask(__name__)
+
+@app_flask.route("/")
+def home():
+    return "ok"
+
+def run():
+    app_flask.run(host="0.0.0.0", port=10000)
+
+Thread(target=run).start()
+
 from datetime import datetime, timedelta
 
 from telegram import (
