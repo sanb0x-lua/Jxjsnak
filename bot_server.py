@@ -1,7 +1,6 @@
 import os
 import secrets
 import json
-import time
 import threading
 from datetime import datetime, timedelta
 
@@ -19,7 +18,7 @@ ADMIN_USERNAME = "superfemboy"
 
 app_flask = Flask(__name__)
 
-# ================== DATABASE ==================
+# ================== DATABASE (как в твоем файле) ==================
 
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
@@ -31,11 +30,7 @@ def create_table():
         CREATE TABLE IF NOT EXISTS keys (
             id SERIAL PRIMARY KEY,
             key TEXT UNIQUE,
-            hwid TEXT,
-            created_at TIMESTAMP,
-            expires_at TIMESTAMP,
-            user_id BIGINT,
-            used BOOLEAN DEFAULT FALSE,
+            expire TIMESTAMP,
             ip TEXT
         );
     """)
@@ -45,14 +40,13 @@ def create_table():
 
 create_table()
 
-# Функции для работы с БД
-def save_key(key, expires_at, user_id):
+# Дополнительные функции для работы с БД
+def save_key(key, expire_date, user_id):
     conn = get_connection()
     cur = conn.cursor()
-    created_at = datetime.utcnow()
     cur.execute(
-        "INSERT INTO keys (key, created_at, expires_at, user_id, used) VALUES (%s, %s, %s, %s, %s)",
-        (key, created_at, expires_at, user_id, False)
+        "INSERT INTO keys (key, expire, ip) VALUES (%s, %s, %s)",
+        (key, expire_date, None)
     )
     conn.commit()
     cur.close()
@@ -61,7 +55,7 @@ def save_key(key, expires_at, user_id):
 def get_all_keys():
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("SELECT key, hwid, created_at, expires_at, user_id, used, ip FROM keys ORDER BY created_at DESC")
+    cur.execute("SELECT key, expire, ip FROM keys ORDER BY expire DESC")
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -74,15 +68,12 @@ def get_keys_stats():
     cur.execute("SELECT COUNT(*) FROM keys")
     total = cur.fetchone()[0]
     
-    cur.execute("SELECT COUNT(*) FROM keys WHERE used = TRUE")
-    used = cur.fetchone()[0]
-    
-    cur.execute("SELECT COUNT(*) FROM keys WHERE expires_at < NOW()")
+    cur.execute("SELECT COUNT(*) FROM keys WHERE expire < NOW()")
     expired = cur.fetchone()[0]
     
     cur.close()
     conn.close()
-    return total, used, expired
+    return total, expired
 
 # ================== FLASK API (для скрипта) ==================
 
@@ -106,28 +97,19 @@ def check_key():
         return jsonify({"ok": False, "error": "Invalid key"})
     
     # Проверка срока действия
-    expires_at = key_data[4]  # expires_at
-    if datetime.utcnow() > expires_at:
+    expire = key_data[2]  # expire
+    if datetime.utcnow() > expire:
         cur.close()
         conn.close()
         return jsonify({"ok": False, "expired": True})
     
-    # Если ключ не использован, привязываем к HWID и IP
-    if not key_data[6]:  # used = False
-        cur.execute("UPDATE keys SET hwid = %s, used = TRUE, ip = %s WHERE key = %s", 
-                   (hwid, ip, key))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return jsonify({"ok": True, "message": "Key activated"})
-    
-    # Если уже использован, проверяем HWID
+    # Обновляем IP
+    cur.execute("UPDATE keys SET ip = %s WHERE key = %s", (ip, key))
+    conn.commit()
     cur.close()
     conn.close()
-    if key_data[1] == hwid:  # hwid совпадает
-        return jsonify({"ok": True, "message": "Key valid"})
-    else:
-        return jsonify({"ok": False, "error": "Wrong HWID"})
+    
+    return jsonify({"ok": True, "message": "Key valid"})
 
 @app_flask.route("/")
 def home():
@@ -323,16 +305,9 @@ async def admin_list_keys(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = "**📋 Все ключи:**\n\n"
     for k in keys:
-        status = "✅ Использован" if k[5] else "❌ Не использован"
-        hwid_info = f"HWID: `{k[1]}`" if k[1] else "HWID: не привязан"
-        ip_info = f"IP: `{k[6]}`" if k[6] else "IP: нет"
         text += f"🔑 `{k[0]}`\n"
-        text += f"   Создан: {k[2].strftime('%Y-%m-%d %H:%M:%S')}\n"
-        text += f"   Истекает: {k[3].strftime('%Y-%m-%d %H:%M:%S')}\n"
-        text += f"   {status}\n"
-        text += f"   {hwid_info}\n"
-        text += f"   {ip_info}\n"
-        text += f"   User ID: {k[4]}\n\n"
+        text += f"   Истекает: {k[1].strftime('%Y-%m-%d %H:%M:%S')}\n"
+        text += f"   IP: {k[2] if k[2] else 'не использован'}\n\n"
     
     keyboard = [[InlineKeyboardButton("◀️ Назад в админку", callback_data="admin")]]
     
@@ -360,14 +335,12 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.message.delete()
     
-    total, used, expired = get_keys_stats()
+    total, expired = get_keys_stats()
     active = total - expired
     
     text = f"""**📊 Статистика ключей**
 
 📌 **Всего ключей:** {total}
-✅ **Использовано:** {used}
-❌ **Не использовано:** {total - used}
 ⏰ **Активных:** {active}
 ⌛ **Истекло:** {expired}"""
     
@@ -417,6 +390,8 @@ def start_bot():
 # ================== MAIN ==================
 
 if __name__ == "__main__":
+    create_table()
+
     # Запуск бота в отдельном потоке
     threading.Thread(target=start_bot).start()
 
